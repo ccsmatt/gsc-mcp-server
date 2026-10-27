@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GSCClient } from "./gsc-client.js";
+import { buildPageOverview } from "./page-overview.js";
 
 // Zod schemas for tool parameters
 export const listSitesSchema = z.object({});
@@ -62,6 +63,71 @@ export const searchAnalyticsSchema = z.object({
     .optional()
     .default(0)
     .describe("Starting row for pagination (default: 0)"),
+});
+
+export const pageOverviewSchema = z.object({
+  siteUrl: z
+    .string()
+    .describe(
+      "The site URL to query (e.g., 'https://example.com/' or 'sc-domain:example.com')"
+    ),
+  startDate: z.string().describe("Start date in YYYY-MM-DD format"),
+  endDate: z.string().describe("End date in YYYY-MM-DD format"),
+  type: z
+    .enum(["web", "image", "video", "news", "discover", "googleNews"])
+    .optional()
+    .default("web")
+    .describe("Search type (default: web)"),
+  minImpressions: z
+    .number()
+    .min(0)
+    .optional()
+    .default(100)
+    .describe("Only list standalone pages with at least this many impressions (default: 100)"),
+  standaloneMaxDepth: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .optional()
+    .default(1)
+    .describe(
+      "Pages with this many path segments or fewer are 'standalone' (default 1 = /service-page/). Deeper pages are grouped by first path segment."
+    ),
+  maxStandalone: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .default(40)
+    .describe("Max standalone pages to return (default: 40)"),
+  maxGroups: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .default(25)
+    .describe("Max path-prefix groups to return (default: 25)"),
+  includePathRegex: z
+    .string()
+    .optional()
+    .describe("Only include pages whose path matches this regex (case-insensitive)"),
+  excludePathRegex: z
+    .string()
+    .optional()
+    .describe(
+      "Exclude pages whose path matches this regex. Defaults to common utility paths (blog, category, privacy, terms, contact, about, reviews, careers, faqs, gallery, etc). Pass an empty string to exclude nothing."
+    ),
+  maxRows: z
+    .number()
+    .int()
+    .min(1000)
+    .max(200000)
+    .optional()
+    .default(50000)
+    .describe("Safety cap on raw page rows fetched from Search Console (default: 50000)"),
 });
 
 export const urlInspectionSchema = z.object({
@@ -170,6 +236,61 @@ export const TOOL_DEFINITIONS = [
         startRow: {
           type: "number",
           description: "Starting row for pagination",
+        },
+      },
+      required: ["siteUrl", "startDate", "endDate"],
+    },
+  },
+  {
+    name: "gsc_page_overview",
+    description:
+      "Compact page-level overview for a site, built for finding service/location page opportunities. Fetches ALL pages with impressions (paginated), merges query-string duplicates, then returns (1) 'standalone' top-level pages above a minimum impression threshold, sorted by impressions, and (2) 'groups' of deeper pages (e.g. /local-gutter-installation/city/) rolled up by first path segment with page count, impressions and average position. Far cheaper than gsc_search_analytics with the page dimension. Only pages with at least one impression are included.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        siteUrl: {
+          type: "string",
+          description:
+            "The site URL to query (e.g., 'https://example.com/' or 'sc-domain:example.com')",
+        },
+        startDate: { type: "string", description: "Start date in YYYY-MM-DD format" },
+        endDate: { type: "string", description: "End date in YYYY-MM-DD format" },
+        type: {
+          type: "string",
+          enum: ["web", "image", "video", "news", "discover", "googleNews"],
+          description: "Search type (default: web)",
+        },
+        minImpressions: {
+          type: "number",
+          description:
+            "Only list standalone pages with at least this many impressions (default: 100)",
+        },
+        standaloneMaxDepth: {
+          type: "number",
+          description:
+            "Pages with this many path segments or fewer are 'standalone' (default 1). Deeper pages are grouped by first path segment.",
+        },
+        maxStandalone: {
+          type: "number",
+          description: "Max standalone pages to return (default: 40)",
+        },
+        maxGroups: {
+          type: "number",
+          description: "Max path-prefix groups to return (default: 25)",
+        },
+        includePathRegex: {
+          type: "string",
+          description: "Only include pages whose path matches this regex (case-insensitive)",
+        },
+        excludePathRegex: {
+          type: "string",
+          description:
+            "Exclude pages whose path matches this regex. Defaults to common utility paths (blog, category, privacy, terms, contact, about, reviews, careers, faqs, gallery). Pass an empty string to exclude nothing.",
+        },
+        maxRows: {
+          type: "number",
+          description:
+            "Safety cap on raw page rows fetched from Search Console (default: 50000)",
         },
       },
       required: ["siteUrl", "startDate", "endDate"],
@@ -385,6 +506,19 @@ export async function handleToolCall(
             {
               type: "text",
               text: JSON.stringify({ summary, rows }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "gsc_page_overview": {
+        const params = pageOverviewSchema.parse(args);
+        const overview = await buildPageOverview(client, params);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(overview),
             },
           ],
         };
